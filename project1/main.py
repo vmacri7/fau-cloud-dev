@@ -1,9 +1,9 @@
 import os
+import shutil
 from flask import Flask, redirect, request, send_file
 
-from google.cloud import datastore, storage
+from google.cloud import storage
 
-datastore_client = datastore.Client()
 storage_client = storage.Client()
 
 BUCKET_NAME = "cloud-native-dev-p1"
@@ -86,4 +86,5 @@ def get_file(filename):
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # app.run(debug=True)
+    app.run()
