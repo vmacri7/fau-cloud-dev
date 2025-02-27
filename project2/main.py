@@ -25,11 +25,6 @@ def initialize_gemini_model():
     )
     return model
 
-def strip_json_padding(string):
-    string = string.replace("```json", "")
-    string = string.replace("```", "")
-    return string
-
 # analyze image with gemini ai
 def analyze_image_with_gemini(image_path):
     model = initialize_gemini_model()
