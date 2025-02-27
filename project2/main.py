@@ -1,7 +1,8 @@
 import os
 import io
 import json
-from flask import Flask, redirect, request, send_file, url_for
+import time
+from flask import Flask, redirect, request, send_file, url_for, render_template_string
 import google.generativeai as genai
 from google.cloud import storage
 
@@ -42,20 +43,19 @@ def analyze_image_with_gemini(image_path):
     # get response from gemini
     response = model.generate_content([file, "\n\n", prompt])
 
-    # strip '''json ... ''' which gemini adds to the response
-    json_text = strip_json_padding(response.text)
+    # strip '''json ... ''' which gemini adds to the response and any other invalid control characters
+    json_text = response.text.replace("\n", " ").replace("\r", " ").replace("\t", " ").replace("```json", "").replace("```", "")
 
-    # extract json data
     try:
-        # attempt to parse json directly from response text
         result = json.loads(json_text)
-    except json.JSONDecodeError:
-        # if direct parsing fails, populate with default values
+    except json.JSONDecodeError as e:
+        print("JSON PARSING ERROR:", e)
+        print("FAILED JSON TEXT:", json_text)
         result = {
             "title": "error encountered in generating title",
             "description": "error encountered in generating description"
         }
-    
+
     return result
 
 # list file names in the bucket
@@ -87,6 +87,9 @@ def upload_json_to_cloud(json_data, filename, bucket_name=BUCKET_NAME):
     json_filename = os.path.splitext(filename)[0] + ".json"
     blob = bucket.blob(json_filename)
     
+    # Add timestamp to the JSON data for chronological ordering
+    json_data["upload_timestamp"] = int(time.time())
+    
     blob.upload_from_string(
         json.dumps(json_data),
         content_type="application/json"
@@ -94,48 +97,152 @@ def upload_json_to_cloud(json_data, filename, bucket_name=BUCKET_NAME):
     
     return json_filename
 
+# get json data from cloud storage
+def get_json_from_cloud(json_filename, bucket_name=BUCKET_NAME):
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(json_filename)
+    
+    if not blob.exists():
+        return {"title": "No metadata available", "description": "No description available", "upload_timestamp": 0}
+    
+    json_content = blob.download_as_string()
+    return json.loads(json_content)
+
+# get all images with their metadata
+def get_all_images_with_metadata():
+    image_data = []
+    files = list_cloud_files()
+    
+    for file in files:
+        if file.lower().endswith(".jpg") or file.lower().endswith(".jpeg"):
+            # For each image, check if there's a corresponding JSON file
+            json_filename = os.path.splitext(file)[0] + ".json"
+            image_url = url_for('serve_file', filename=file)
+            json_url = url_for('serve_json', filename=json_filename)
+            
+            # Get the metadata from the JSON file
+            metadata = get_json_from_cloud(json_filename)
+            
+            image_data.append({
+                "filename": file,
+                "image_url": image_url,
+                "json_url": json_url,
+                "title": metadata.get("title", "No title available"),
+                "description": metadata.get("description", "No description available"),
+                "timestamp": metadata.get("upload_timestamp", 0)  # Default to 0 if not found
+            })
+    
+    # Sort images by timestamp in descending order (newest first)
+    image_data.sort(key=lambda x: x["timestamp"], reverse=True)
+    
+    return image_data
+
 @app.route('/')
 def index():
-    index_html = """
+    # Get all images with their metadata
+    images = get_all_images_with_metadata()
+    
+    html = """
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
-        <title>image upload app</title>
-        <style>
-            body { font-family: arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-            .image-list { list-style-type: none; padding: 0; }
-            .image-list li { margin-bottom: 10px; }
-        </style>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>AI Image Gallery</title>
+        <link rel="stylesheet" href="/static/styles.css">
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     </head>
     <body>
-        <h1>image upload app</h1>
-        <form method="post" enctype="multipart/form-data" action="/upload">
-          <div>
-            <label for="file">choose file to upload</label>
-            <input type="file" id="file" name="form_file" accept="image/jpeg"/>
-          </div>
-          <div>
-            <button type="submit">upload image</button>
-          </div>
-        </form>
-        <h2>uploaded images:</h2>
-        <ul class="image-list">
+        <div class="app-container">
+            <header>
+                <div class="header-content">
+                    <h1>AI Image Gallery</h1>
+                    <p>Upload images and let AI generate descriptions</p>
+                </div>
+            </header>
+            
+            <section class="upload-section">
+                <form method="post" enctype="multipart/form-data" action="/upload" class="upload-form">
+                    <div class="file-input-container">
+                        <input type="file" id="file" name="form_file" accept="image/jpeg" class="file-input"/>
+                        <label for="file" class="file-label">
+                            <span class="file-icon">+</span>
+                            <span class="file-text">Choose JPEG image</span>
+                        </label>
+                        <span class="selected-file-name"></span>
+                    </div>
+                    <button type="submit" class="upload-button">Upload & Analyze</button>
+                </form>
+            </section>
+            
+            <main class="gallery-section">
+                <h2>Your Images</h2>
+                <div class="image-grid">
     """
     
-    file_names = list_files()
+    # Add each image card to the HTML
+    for image in images:
+        # Truncate description if it's too long
+        description = image['description']
+            
+        html += f"""
+                    <div class="image-card">
+                        <div class="image-container">
+                            <img src="{image['image_url']}" alt="{image['title']}" loading="lazy">
+                        </div>
+                        <div class="image-info">
+                            <h3 class="image-title">{image['title']}</h3>
+                            <p class="image-description">{description}</p>
+                            <div class="image-actions">
+                                <a href="{image['image_url']}" target="_blank" class="action-button">View Image</a>
+                                <a href="{image['json_url']}" target="_blank" class="action-button secondary">View JSON</a>
+                            </div>
+                        </div>
+                    </div>
+        """
     
-    for file in file_names:
-        # create proxy urls through app instead of direct bucket urls
-        file_url = url_for('serve_file', filename=file)
-        index_html += f'<li><a href="{file_url}" target="_blank">{file}</a></li>'
-    
-    index_html += """
-        </ul>
+    html += """
+                </div>
+            </main>
+            
+            <footer>
+                <p>Vincenzo Macri · Cloud Native Dev · Project 2</p>
+            </footer>
+        </div>
+        
+        <script>
+            // Show selected filename when a file is chosen
+            document.querySelector('.file-input').addEventListener('change', function(e) {
+                const fileName = e.target.files[0]?.name || 'No file selected';
+                document.querySelector('.selected-file-name').textContent = fileName;
+                document.querySelector('.file-label').classList.add('file-selected');
+            });
+            
+            // Add animation to cards as they appear in viewport
+            document.addEventListener('DOMContentLoaded', function() {
+                const cards = document.querySelectorAll('.image-card');
+                
+                const observer = new IntersectionObserver((entries) => {
+                    entries.forEach(entry => {
+                        if (entry.isIntersecting) {
+                            entry.target.classList.add('visible');
+                            observer.unobserve(entry.target);
+                        }
+                    });
+                }, { threshold: 0.1 });
+                
+                cards.forEach(card => {
+                    observer.observe(card);
+                });
+            });
+        </script>
     </body>
     </html>
     """
     
-    return index_html
+    return html
 
 @app.route('/upload', methods=["POST"])
 def upload():
@@ -152,7 +259,7 @@ def upload():
         # upload image to cloud
         upload_file_to_cloud(temp_path)
 
-        # upload json metadata to cloud
+        # upload json metadata to cloud (timestamp will be added by the function)
         upload_json_to_cloud(image_data, file.filename)
         
         # clean up temporary file
@@ -189,5 +296,37 @@ def serve_file(filename):
         download_name=filename
     )
 
+@app.route('/json/<filename>')
+def serve_json(filename):
+    bucket = storage_client.bucket(BUCKET_NAME)
+    blob = bucket.blob(filename)
+    
+    if not blob.exists():
+        return {"error": "JSON file not found"}, 404
+    
+    # create a file-like object from the blob
+    file_bytes = blob.download_as_bytes()
+    byte_stream = io.BytesIO(file_bytes)
+    
+    content_type = 'application/json'
+    
+    # serve the file
+    return send_file(
+        byte_stream,
+        mimetype=content_type,
+        as_attachment=False,
+        download_name=filename
+    )
+
+@app.route('/static/styles.css')
+def serve_css():
+    with open('static/styles.css', 'r') as file:
+        css = file.read()
+    
+    return css, 200, {'Content-Type': 'text/css'}
+
 if __name__ == '__main__':
+    # Ensure static directory exists
+    os.makedirs('static', exist_ok=True)
+    
     app.run(debug=True)
