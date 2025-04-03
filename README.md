@@ -6,3 +6,5 @@ This repo contains projects for my cloud native development course taken in spri
 ### Project 1 -> [project1](https://github.com/vmacri7/fau-cloud-dev/tree/main/project1)
 
 ### Project 2 -> [project2](https://github.com/vmacri7/fau-cloud-dev/tree/main/project2)
+
+### Project 3 -> [project3](https://github.com/vmacri7/fau-cloud-dev-p3)
